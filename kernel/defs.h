@@ -59,6 +59,7 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+uint64		      meminfo(void);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -101,6 +102,11 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+int		          getpname(int);
+int		          getnice(int pid);
+int		          setnice(int pid, int value);
+void		        ps(int pid);
+int		          waitpid(int pid);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -183,3 +189,7 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+//PA2
+#define MAX_INT 2147483647
+#define BASE_SLICE 5000

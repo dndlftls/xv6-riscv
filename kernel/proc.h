@@ -104,4 +104,17 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int nice;                    // Nice value for PA1 (valid range: 0~39)
+  int runtime;                 // Total time this process ran on CPU
+  int vruntime;                // Virtual runtime (used for fair scheduling)
+  int time_slice;              // Time slice assigned by scheduler
+  int vdeadline;               // Virtual deadline (EEVDF scheduling)
 };
+
+extern int weight_table[40];
+extern struct proc proc[NPROC];
+extern int avg_vruntime;
+extern int min_vruntime;
+extern int total_weight;
+extern void update_avg_vruntime(void);
+extern int isEligible(struct proc *p);
