@@ -100,9 +100,9 @@ int main(int argc, char **argv){
               a = a * 10 + 1;
           }
       }
-
+      //printf("child process is over.\n");
       exit(0);
   }
-  
+  //printf("it's all over.\n");
   exit(0);
 }

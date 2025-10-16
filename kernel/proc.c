@@ -469,6 +469,8 @@ scheduler(void)
     intr_on();
     intr_off();
 
+    update_avg_vruntime();
+
     int found = 0;
     struct proc *min_vdl_proc = 0; 
     int min_vdl = MAX_INT;
