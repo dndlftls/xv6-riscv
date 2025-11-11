@@ -60,6 +60,7 @@ void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
 uint64		      meminfo(void);
+int		freememCount(void);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -111,6 +112,7 @@ uint64		mmap(uint64, int, int, int, int, int);
 int		pfh(uint64, uint64);
 int		munmap(uint64);
 int		freemem(void);
+void		unmap_proc_mmaps(struct proc*);
 
 // swtch.S
 void            swtch(struct context*, struct context*);

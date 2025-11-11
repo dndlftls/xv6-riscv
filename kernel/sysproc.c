@@ -180,7 +180,7 @@ sys_mmap(void)
   int fd;
   int offset;
   
-  argint(0, &addr);
+  argaddr(0, &addr);
   argint(1, &length);
   argint(2,&prot);
   argint(3,&flags);
@@ -191,10 +191,10 @@ sys_mmap(void)
 }
 
 uint64
-sysmunmap(void)
+sys_munmap(void)
 {
   uint64 addr;
-  argint(0,&addr);
+  argaddr(0,&addr);
   return munmap(addr);
 }
 
