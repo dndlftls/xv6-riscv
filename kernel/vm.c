@@ -5,8 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "spinlock.h"
-#include "proc.h"
+#include "sleeplock.h"
 #include "fs.h"
+#include "file.h"
+#include "proc.h"
+
 
 /*
  * the kernel's page table.
@@ -445,31 +448,40 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
+extern int vmfault_mmap(pagetable_t pt, uint64 fault_va, int read);
+
 // allocate and map user memory if process is referencing a page
 // that was lazily allocated in sys_sbrk().
 // returns 0 if va is invalid or already mapped, or if
 // out of physical memory, and physical address if successful.
 uint64
-vmfault(pagetable_t pagetable, uint64 va, int read)
+vmfault(pagetable_t pagetable, uint64 fault_va, int read)
 {
-  uint64 mem;
   struct proc *p = myproc();
+  uint64 va = PGROUNDDOWN(fault_va);
 
+  // 0) check if its already mapped
+  if (ismapped(pagetable, va))
+    return 1;
+
+  // 1) search from mmap area
+  if(vmfault_mmap(pagetable, fault_va, read) == 1) return 1;
+  
+  // 2) If not within mmap region, fall back to the original lazy zero-page logic
+  // only handle addresses below p->sz as before
   if (va >= p->sz)
     return 0;
-  va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
+
+  char *mem = kalloc();
+  if (mem == 0)
+    return 0;
+  memset(mem, 0, PGSIZE);
+
+  if (mappages(pagetable, va, PGSIZE, (uint64)mem, PTE_U | PTE_R | PTE_W) != 0) {
+    kfree(mem);
     return 0;
   }
-  mem = (uint64) kalloc();
-  if(mem == 0)
-    return 0;
-  memset((void *) mem, 0, PGSIZE);
-  if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
-    kfree((void *)mem);
-    return 0;
-  }
-  return mem;
+  return (uint64)mem;
 }
 
 int

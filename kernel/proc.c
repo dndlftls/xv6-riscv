@@ -5,6 +5,13 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+
+#define MMAPBASE 0x40000000
+struct mmap_area ma[64];
+struct spinlock mm_lock;
 
 int weight_table[40] = {
  /* 0  */     88761,     71755,     56483,     46273,     36291,
@@ -306,10 +313,10 @@ kfork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
-  
+
+  //updates for PA2(EEVDF)  
   np->vruntime = p->vruntime;
   np->nice = p->nice;
-
   np->vdeadline = np->vruntime + (BASE_SLICE*(weight_table[20]/weight_table[np->nice]));
 
   // increment reference counts on open file descriptors.
@@ -319,6 +326,51 @@ kfork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+
+  // --- clone mmap metadata and already-mapped pages (lazy pages stay lazy) ---
+  acquire(&mm_lock);
+  for (int mi = 0; mi < 64; mi++) {
+    if (ma[mi].length == 0 || ma[mi].p != p) continue; // skip unused / other process
+
+    // find a free slot in the global table for the child
+    int free_idx = -1;
+    for (int mj = 0; mj < 64; mj++) {
+      if (ma[mj].length == 0) { free_idx = mj; break; }
+    }
+    if (free_idx < 0) {                      // no free slot
+      release(&mm_lock);
+      goto fork_fail;
+    }
+
+    // duplicate metadata; file-backed mapping must bump ref count
+    ma[free_idx].addr   = ma[mi].addr;
+    ma[free_idx].length = ma[mi].length;     // page-aligned; acts as "in use"
+    ma[free_idx].offset = ma[mi].offset;
+    ma[free_idx].prot   = ma[mi].prot;
+    ma[free_idx].flags  = ma[mi].flags;
+    ma[free_idx].f      = (ma[mi].flags & MAP_ANONYMOUS) ? 0 : filedup(ma[mi].f);
+    ma[free_idx].p      = np;
+
+    // copy only pages that are already mapped in parent
+    for (uint64 va = ma[mi].addr; va < ma[mi].addr + ma[mi].length; va += PGSIZE) {
+      pte_t *pte = walk(p->pagetable, va, 0);
+      if (pte == 0 || (*pte & PTE_V) == 0) continue; // not mapped yet (lazy)
+      uint64 pa = PTE2PA(*pte);
+
+      char *mem = kalloc();
+      if (!mem) { release(&mm_lock); goto fork_fail; }
+      memmove(mem, (void*)pa, PGSIZE);
+
+      // inherit PTE user permissions (no execute)
+      uint flags = PTE_FLAGS(*pte) & (PTE_U | PTE_R | PTE_W);
+      if (mappages(np->pagetable, va, PGSIZE, (uint64)mem, flags) != 0) {
+        kfree(mem);
+        release(&mm_lock);
+        goto fork_fail;
+      }
+    }
+  }
+  release(&mm_lock);
 
   pid = np->pid;
 
@@ -332,9 +384,17 @@ kfork(void)
   np->state = RUNNABLE;
   release(&np->lock);
   
-  update_avg_vruntime();
+  update_avg_vruntime(); //for PA2
 
   return pid;
+  
+  // --- cleanup path on failure after allocproc ---
+fork_fail:
+  // unmap any pages mapped into child's user space and free proc
+  uvmunmap(np->pagetable, 0, np->sz/PGSIZE, 1);
+  freeproc(np);
+  release(&np->lock);
+  return -1;
 }
 
 // Pass p's abandoned children to init.
@@ -914,4 +974,221 @@ update_avg_vruntime(void){
 int
 isEligible(struct proc *p){
   return (avg_vruntime >= total_weight * (p->vruntime - min_vruntime))?1:0;
+}
+
+
+uint64
+mmap(uint64 addr, int length, int prot, int flags, int fd, int offset)
+{
+
+  struct proc *p = myproc();
+  uint64 st_addr = addr + MMAPBASE;
+
+  struct file* f = 0;
+  if(fd != -1)
+    f = p->ofile[fd];
+
+  int anony = 0;
+  int populate = 0;
+  int prot_read = 0;
+  int prot_write = 0;
+  char* mem = 0;
+
+  if(flags){
+    if(MAP_ANONYMOUS) anony = 1;
+    if(MAP_POPULATE) populate = 1;
+  }
+
+  if(prot){
+    if(PROT_READ) prot_read = 1;
+    if(PROT_WRITE) prot_write = 1;
+  }
+
+  if(!anony && fd == -1){
+    return 0;
+  }
+  if(f!=0){
+    if(!f->readable && prot_read){
+      return 0;
+    }
+    if(!f->writable && prot_write){
+      return 0;
+    }
+  }
+
+  
+
+  int i=0;
+  while(ma[i].length==0){
+    i++;
+  }
+
+  if(f){
+    f=filedup(f);
+  }
+
+  ma[i].f = f;
+  ma[i].length = length;
+  ma[i].addr = st_addr;
+  ma[i].offset = offset;
+  ma[i].prot = prot;
+  ma[i].flags = flags;
+  ma[i].p = p;
+ 
+  if(!populate){
+    return st_addr;
+  }
+
+  else{
+    if(!anony){
+      f->off = offset;
+      uint64 ptr = 0;
+      for(ptr = st_addr; ptr<st_addr+length; ptr+=PGSIZE){
+	mem = kalloc();
+	if(!mem) return 0;
+	memset(mem,0,PGSIZE);
+	fileread(f,mem,PGSIZE);
+	int perm = prot|PTE_U;
+	int ret = mappages(p->pgdir, (void*)ptr, PGSIZE, mem, perm);
+	if(ret==-1) return 0;
+      }
+      return st_addr;
+    }
+
+    else{
+      uint64 ptr = 0;
+      for(ptr = st_addr; ptr<st_addr+length; ptr+=PGSIZE){
+	mem = kalloc();
+	if(!mem) return 0;
+	memset(mem,0,PGSIZE);
+	int perm = prot|PTE_U;
+	int ret = mappages(p->pgdir, (void*)ptr, PGSIZE, mem, perm);
+	if(ret==-1) return 0;
+      }
+      return st_addr;
+    }
+  }
+
+  return st_addr;
+
+}
+
+static struct mmap_area* find_mmap_area(struct proc *p, uint64 va) {
+  for (int i = 0; i < 64; i++) {
+    struct mmap_area *mm = &ma[i];
+    if (mm->length == 0) continue;         // not use
+    if (mm->p != p) continue;
+    uint64 start = mm->addr;
+    uint64 end   = start + mm->length;
+    if (start <= va && va < end)
+      return mm;
+  }
+  return 0;
+}
+
+int
+vmfault_mmap(pagetable_t pt, uint64 fault_va, int read)
+{
+  struct proc *p = myproc();
+  uint64 va = PGROUNDDOWN(fault_va);
+
+  // Find the mmap region corresponding to this faulting address.
+  struct mmap_area *m = find_mmap_area_local(p, va);
+  if (!m)
+    return 0; // Not within an mmap region; let the normal vmfault handle it.
+
+  // Check access permissions.
+  if (!read && !(m->prot & PROT_WRITE))
+    return 0; // Write fault but mapping is read-only.
+  if (read && !(m->prot & PROT_READ))
+    return 0; // Read fault but mapping does not allow read.
+
+  // If the page is already mapped, nothing to do.
+  pte_t *pte = walk(pt, va, 0);
+  if (pte && (*pte & PTE_V))
+    return 1;
+
+  // Allocate a single physical page and initialize it with zeros.
+  char *pa = kalloc();
+  if (!pa)
+    return 0;
+  memset(pa, 0, PGSIZE);
+
+  // For file-backed mappings, read file data into the page.
+  if (!(m->flags & MAP_ANONYMOUS) && m->f) {
+    uint64 page_off = va - m->addr;   // offset within the mapping
+    int n = PGSIZE;
+    if (page_off + n > m->length)
+      n = m->length - page_off;       // trim to end of mapping
+    if (n > 0) {
+      int oldoff = m->f->off;         // backup original file offset
+      m->f->off = m->offset + page_off;
+      int r = fileread(m->f, (uint64)pa, n);
+      m->f->off = oldoff;             // restore file offset
+      if (r < 0) {                    // read error
+        kfree(pa);
+        return 0;
+      }
+      // unread portion of the page remains zero-filled
+    }
+  }
+
+  // Build the PTE flags (User | Read | Write?).
+  int perm = PTE_U | PTE_R;
+  if (m->prot & PROT_WRITE)
+    perm |= PTE_W;
+
+  // Map the new page into the process page table.
+  if (mappages(pt, va, PGSIZE, (uint64)pa, perm) != 0) {
+    kfree(pa);
+    return 0;
+  }
+
+  return 1; // Successfully handled one lazy page fault.
+}
+
+int
+munmap(uint64 addr)
+{
+  struct proc *p = myproc();
+  int find_idx = -1;
+
+  for(int t=0;t<64;t++){
+    if(addr == ma[t].addr && ma[t].p == p && ma[t].length != 0){
+      find_idx = t;
+      break;
+    }
+  }
+
+  if(find_idx==-1){
+    break;
+  }
+
+
+  uint64 ptr = 0;
+  pte_t* pte;
+
+  for(ptr = addr; ptr<addr+ma[find+idx].length; ptr += PGSIZE){
+    pte = walk(p->pgdir, (char*)ptr, 0);
+    if(!pte) continue; //page fault has not been occurred on that address, just remove mmap_area struct.
+    if(!(*pte&PTE_V) continue;
+    uint64 paddr = PTE_ADDR(*pte);
+    char *v = paddr;
+    kfree(v);
+    *pte = 0;
+  }
+  ma[find_idx].f = 0;
+  ma[find_idx].addr = 0;
+  ma[find_idx].length = 0;
+  ma[find_idx].offset = 0;
+  ma[find_idx].prot = 0;
+  ma[find_idx].flags = 0;
+  ma[find_idx].p = 0;
+  return 1;
+}
+
+int
+freemem()
+{
+  return freememCount();
 }

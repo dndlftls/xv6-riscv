@@ -107,6 +107,10 @@ int		          getnice(int pid);
 int		          setnice(int pid, int value);
 void		        ps(int pid);
 int		          waitpid(int pid);
+uint64		mmap(uint64, int, int, int, int, int);
+int		pfh(uint64, uint64);
+int		munmap(uint64);
+int		freemem(void);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -193,3 +197,9 @@ void            virtio_disk_intr(void);
 //PA2
 #define MAX_INT 2147483647
 #define BASE_SLICE 5000
+
+//PA3
+#define PROT_READ 0x1
+#define PROT_WRITE 0x2
+#define MAP_ANONYMOUS 0x1
+#define MAP_POPULATE 0x2
