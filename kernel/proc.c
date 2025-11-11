@@ -1306,21 +1306,24 @@ munmap(uint64 addr)
   
   int start = PGROUNDDOWN(area.addr);
   int npages = (area.length + PGSIZE - 1) / PGSIZE;
-  printf("[munmap] unmap range start=0x%d npages=%d end=0x%ld\n", start, npages, start + (uint64)npages*PGSIZE);
+  /*
+  printf("[munmap] unmap range start=0x% npages=%d end=0x%ld\n", start, npages, start + (uint64)npages*PGSIZE);
   // 디버그: 언매핑 직전 남은 PTE가 있는지 확인
   for (uint64 va = start; va < start + npages*PGSIZE; va += PGSIZE) {
     pte_t *pte = walk(p->pagetable, va, 0);
     if (pte && (*pte & PTE_V))
       printf("[munmap] still mapped before unmap va=0x%ld pte=0x%lx\n", va, *pte);
   }
+  */
   uvmunmap(p->pagetable, start, npages,1);
+  /*
   // 언매핑 직후 확인
   for (uint64 va = start; va < start + npages*PGSIZE; va += PGSIZE) {
     pte_t *pte = walk(p->pagetable, va, 0);
     if (pte && (*pte & PTE_V))
       printf("[munmap] still mapped AFTER unmap va=0x%ld pte=0x%lx\n", va, *pte);
   }
-
+  */
 
   if(!(area.flags & MAP_ANONYMOUS) && area.f) fileclose(area.f);
   

@@ -221,31 +221,31 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
-  if(newsz < oldsz)
+  if (newsz < oldsz)
     return oldsz;
 
-  uint64 a = PGROUNDUP(oldsz);
-  for(; a < newsz; a += PGSIZE){
-    // 이미 매핑된 페이지는 절대 다시 매핑하지 않는다 (remap 방지).
+  uint64 start = PGROUNDUP(oldsz);
+  for (uint64 a = start; a < newsz; a += PGSIZE) {
+    // 이미 매핑된 페이지는 절대 다시 매핑하지 않는다 (remap 방지)
     pte_t *pte = walk(pagetable, a, 0);
     if (pte && (*pte & PTE_V)) {
-      // 필요하면 원인 추적 로그를 남겨도 됨:
-      // printf("[uvmalloc] skip already-mapped a=0x%p (oldsz=0x%p newsz=0x%p)\n", a, oldsz, newsz);
+      // 필요하면 로그 유지
+      // printf("[uvmalloc] skip already-mapped a=0x%p pte=0x%lx (oldsz=0x%p newsz=0x%p)\n", (void*)a, *pte, (void*)oldsz, (void*)newsz);
       continue;
     }
     char *mem = kalloc();
-     if(mem == 0){
-      uvmdealloc(pagetable, a, oldsz);   // 롤백
-       return 0;
-     }
-     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
-       kfree(mem);
-       uvmdealloc(pagetable, a, oldsz);
-       return 0;
-     }
-   }
-   return newsz;
+    if (mem == 0) {
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
+    memset(mem, 0, PGSIZE);
+    if (mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R | PTE_U | xperm) != 0) {
+      kfree(mem);
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
+  }
+  return newsz;
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -470,7 +470,10 @@ vmfault(pagetable_t pagetable, uint64 fault_va, int read)
   uint64 pa = walkaddr(pagetable,va);
   if (pa != 0)
     return pa;
-
+  
+  if(is_guard_page(pagetable, va))
+    return 0;
+  
   // 1) search from mmap area
   if(vmfault_mmap(pagetable, fault_va, read) == 1) return walkaddr(pagetable,va);
   
@@ -489,6 +492,19 @@ vmfault(pagetable_t pagetable, uint64 fault_va, int read)
     return 0;
   }
   return (uint64)mem;
+}
+
+int
+is_guard_page(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA)
+    return 0;
+
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+
+  return (*pte & PTE_V) && ((*pte & PTE_U) == 0);
 }
 
 int

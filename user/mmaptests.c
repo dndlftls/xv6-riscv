@@ -26,12 +26,31 @@ static int create_file_with_pattern(const char *path, char a, char b)
 {
   int fd = open(path, O_CREATE | O_RDWR);
   if (fd < 0) return -1;
-  char buf[PGSIZE];
-  memset(buf, a, sizeof(buf));
-  if (write(fd, buf, sizeof(buf)) != sizeof(buf)) { close(fd); return -1; }
-  memset(buf, b, sizeof(buf));
-  if (write(fd, buf, sizeof(buf)) != sizeof(buf)) { close(fd); return -1; }
-  if (close(fd) < 0) return -1;
+  char *buf = malloc(PGSIZE);
+  if (buf == 0) {
+    close(fd);
+    return -1;
+  }
+
+  memset(buf, a, PGSIZE);
+  if (write(fd, buf, PGSIZE) != PGSIZE) {
+    free(buf);
+    close(fd);
+    return -1;
+  }
+
+  memset(buf, b, PGSIZE);
+  if (write(fd, buf, PGSIZE) != PGSIZE) {
+    free(buf);
+    close(fd);
+    return -1;
+  }
+
+  free(buf);
+
+  if (close(fd) < 0)
+    return -1;
+
   return 0;
 }
 
