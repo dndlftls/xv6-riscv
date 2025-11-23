@@ -68,9 +68,18 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
+  } else if(r_scause() == 15 || r_scause() == 13) {
+    uint64 fault_va = r_stval();
+    if(vmfault(p->pagetable, fault_va, (r_scause() == 13)? 1 : 0) != 0) {
+      // page fault on lazily-allocated page
+    } else if(fault_va < MAXVA &&
+              is_guard_page(p->pagetable, PGROUNDDOWN(fault_va))) {
+      setkilled(p);
+    } else {
+      printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), fault_va);
+      setkilled(p);
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
