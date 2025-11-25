@@ -70,14 +70,16 @@ usertrap(void)
     // device interrupt
   } else if(scause == 13 || scause == 15 || scause == 12){
     // load/store/inst page fault.
-    uint64 va = r_stval();
+    uint64 va = PGROUNDDOWN(r_stval());
     pte_t *pte = walk(p->pagetable, va, 0);
-    
-    // if it's swapped out page, try swap-in.
-    if(pte && (*pte & PTE_S) && swap_in(p->pagetable, va) == 0){
-      // restoring success -> call usertrapret()
+  
+    if(pte && (*pte & PTE_S)){
+      if(swap_in(p->pagetable, va)<0){
+        printf("usertrap(): swap_in failed scause=0x%lx va=0x%lx pid=%d\n", scause, va, p->pid);
+        setkilled(p);
+      }
     } else{
-      printf("usertrap(): pagefault scause=0x%lx va=0x%lx pid=%d\n", scause, va, p->pid);
+      printf(" usertrap(): pagefault scause=0x%lx va=0x%lx pid=%d\n", scause, va, p->pid);
       setkilled(p);
     }
   } else {

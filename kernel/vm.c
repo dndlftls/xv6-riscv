@@ -6,6 +6,8 @@
 #include "defs.h"
 #include "fs.h"
 
+int swap_in(pagetable_t pagetable, uint64 va);
+
 extern void lru_add(struct page *p);
 extern void lru_remove(struct page *p);
 extern struct page* pa2page(uint64);
@@ -119,9 +121,16 @@ walkaddr(pagetable_t pagetable, uint64 va)
   if(va >= MAXVA)
     return 0;
 
+retry:
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     return 0;
+    
+  if((*pte & PTE_S)){
+    if(swap_in(pagetable, PGROUNDDOWN(va)) < 0)
+      return 0;
+    goto retry;
+  }
   if((*pte & PTE_V) == 0)
     return 0;
   if((*pte & PTE_U) == 0)
@@ -325,6 +334,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 swap_in(pagetable_t pagetable, uint64 va)
 {
+  printf("swap_in: va=0x%ld\n", va);
   pte_t *pte = walk(pagetable, va, 0);
   if (pte == 0)
     return -1;
@@ -340,24 +350,16 @@ swap_in(pagetable_t pagetable, uint64 va)
   if (mem == 0)
     return -1;
 
-  // 원래 플래그를 복원할 준비
-  uint64 flags = PTE_FLAGS(*pte);
-  flags &= ~PTE_S; // 이제는 메모리에 돌아올 거라 S 비트 제거
-  flags |= PTE_V;  // valid page
-
-  // 먼저 PTE를 "새 물리페이지"로 갱신해 둔다.
-  // 이렇게 해야 copyout이 va에 쓸 때 mem을 backing으로 사용한다.
-  *pte = PA2PTE((uint64)mem) | flags;
-
-  // 이제 디스크 → 유저 VA로 읽어들인다.
-  // swapread는 ptr을 유저주소로 보고, either_copyout(1, ...)을 호출하므로
-  // 여기서는 "유저 VA"인 va를 넘겨야 한다.
-  swapread(va, slot);
-
-  // slot은 다 썼으니 free
+  // 디스크 → 새로 할당한 커널 페이지로 읽기
+  swapread((uint64)mem, slot);
   swap_free_slot(slot);
 
-  // LRU에 다시 등록
+  uint64 flags = PTE_FLAGS(*pte);
+  flags &= ~PTE_S;
+  flags |= PTE_V;
+
+  *pte = PA2PTE((uint64)mem) | flags;
+
   struct page *pg = pa2page((uint64)mem);
   pg->pagetable = pagetable;
   pg->vaddr = (char*)PGROUNDDOWN(va);
@@ -436,6 +438,17 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
+    
+    if(!pte) return -1;
+    
+    if(*pte & PTE_S){
+      if(swap_in(pagetable, va0) < 0)
+        return -1;
+      pte = walk(pagetable, va0, 0);
+      if(pte == 0)
+        return -1;
+    }
+    
     if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
        (*pte & PTE_W) == 0)
       return -1;

@@ -146,6 +146,8 @@ UPROGS=\
   $U/_forkmem\
   $U/_memtst\
   $U/_swapstat\
+  $U/_pa4test\
+  $U/_swaprtest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

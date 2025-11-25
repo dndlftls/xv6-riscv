@@ -8,6 +8,7 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
+#include "proc.h"
 
 int swap_enabled = 0;
 
@@ -123,38 +124,82 @@ lru_remove(struct page *p)
 }
 
 struct page *
-lru_select_victim(void){
+lru_select_victim(void)
+{
   acquire(&lru_lock);
 
-  if(!page_lru_head){
+  if (page_lru_head == 0) {
     release(&lru_lock);
     return 0;
   }
 
+  struct proc *p = myproc();
+  if (p == 0) {
+    // 커널 컨텍스트에서 호출된 경우: 스왑 못 함
+    release(&lru_lock);
+    return 0;
+  }
+
+  pagetable_t target = p->pagetable;
+
   struct page *start = page_lru_head;
   struct page *cur = start;
 
-  while(1) {
-    pagetable_t pt = cur->pagetable;
-    uint64 va = (uint64)cur->vaddr;
-    pte_t *pte = walk(pt, va, 0);
-    
-    if(pte && *pte & PTE_A){
-      *pte &= ~PTE_A;
-      cur = cur->next;  
-    } else if(pte){
-      struct page *victim = cur;
-      page_lru_head = cur->next;
-      release(&lru_lock);
-      return victim;
-    } else {
+  // 원형 리스트 한 바퀴 돌면서,
+  // "현재 프로세스의 페이지" + "access bit가 0"인 것을 찾는다.
+  do {
+    // 1) 다른 프로세스의 페이지면 그냥 건너뜀
+    if (cur->pagetable != target) {
       cur = cur->next;
+      continue;
     }
 
-    if(cur == start)
-      break;
-  }
+    uint64 va = (uint64)cur->vaddr;
+    pte_t *pte = walk(cur->pagetable, va, 0);
 
+    if (pte == 0) {
+      // 매핑이 사라진 페이지는 LRU에서 제거
+      struct page *next = cur->next;
+
+      // 락을 쥔 상태에서 직접 제거 (lru_remove 안 부름)
+      if (cur->next == cur) {
+        page_lru_head = 0;
+      } else {
+        if (cur == page_lru_head)
+          page_lru_head = cur->next;
+        cur->prev->next = cur->next;
+        cur->next->prev = cur->prev;
+      }
+
+      cur->next = 0;
+      cur->prev = 0;
+
+      if (page_lru_head == 0) {
+        release(&lru_lock);
+        return 0;
+      }
+
+      cur = next;
+      start = page_lru_head;
+      continue;
+    }
+
+    // access bit가 1이면 지우고 다음 후보로
+    if (*pte & PTE_A) {
+      *pte &= ~PTE_A;
+      cur = cur->next;
+      continue;
+    }
+
+    // access bit가 0인 현재 프로세스의 페이지 → victim
+    struct page *victim = cur;
+    page_lru_head = cur->next;
+    release(&lru_lock);
+    return victim;
+
+  } while (cur != start);
+
+  // 한 바퀴 돌았는데도 못 찾으면 포기
   release(&lru_lock);
   return 0;
 }
@@ -295,8 +340,9 @@ again:
   release(&kmem.lock);
 
   if(!r){
+    struct proc *p = myproc();
     // no free page -> try swap-out
-    if(swap_enabled && !swap_out_one())
+    if(swap_enabled && p && !swap_out_one())
       goto again; // retry if it works
     
     // also no victim (lru is empty) -> OOM
