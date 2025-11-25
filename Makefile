@@ -139,6 +139,13 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_swaptest\
+  $U/_forkbomb\
+  $U/_stressmem\
+  $U/_forkbomb\
+  $U/_forkmem\
+  $U/_memtst\
+  $U/_swapstat\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

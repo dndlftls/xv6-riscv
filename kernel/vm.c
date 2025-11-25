@@ -6,6 +6,11 @@
 #include "defs.h"
 #include "fs.h"
 
+extern void lru_add(struct page *p);
+extern void lru_remove(struct page *p);
+extern struct page* pa2page(uint64);
+extern void swap_free_slot(int);
+
 /*
  * the kernel's page table.
  */
@@ -163,6 +168,14 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+    
+    if(perm & PTE_U){
+      struct page *pg = pa2page(pa);
+      pg->pagetable = pagetable;
+      pg->vaddr = (char*)PGROUNDDOWN(a);
+      lru_add(pg);
+    }
+
     if(a == last)
       break;
     a += PGSIZE;
@@ -186,12 +199,18 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
+    if((*pte & PTE_V) == 0 && (*pte & PTE_S) == 0)
       panic("uvmunmap: not mapped");
-    if(PTE_FLAGS(*pte) == PTE_V)
-      panic("uvmunmap: not a leaf");
+    if(*pte & PTE_S){
+      uint64 slot_pa = PTE2PA(*pte);
+      int slot = slot_pa / PGSIZE;
+      swap_free_slot(slot);
+      *pte = 0;
+      continue;
+    }
     if(do_free){
       uint64 pa = PTE2PA(*pte);
+      lru_remove(pa2page(pa)); //remove from LRU
       kfree((void*)pa);
     }
     *pte = 0;
@@ -303,6 +322,51 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+int
+swap_in(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte == 0)
+    return -1;
+  if ((*pte & PTE_S) == 0)
+    return -1;   // 스왑 상태가 아님
+
+  // PTE에 인코딩되어 있던 slot 번호 복원
+  uint64 slot_pa = PTE2PA(*pte);
+  int slot = slot_pa / PGSIZE;
+
+  // 새 물리 페이지 할당
+  char *mem = kalloc();
+  if (mem == 0)
+    return -1;
+
+  // 원래 플래그를 복원할 준비
+  uint64 flags = PTE_FLAGS(*pte);
+  flags &= ~PTE_S; // 이제는 메모리에 돌아올 거라 S 비트 제거
+  flags |= PTE_V;  // valid page
+
+  // 먼저 PTE를 "새 물리페이지"로 갱신해 둔다.
+  // 이렇게 해야 copyout이 va에 쓸 때 mem을 backing으로 사용한다.
+  *pte = PA2PTE((uint64)mem) | flags;
+
+  // 이제 디스크 → 유저 VA로 읽어들인다.
+  // swapread는 ptr을 유저주소로 보고, either_copyout(1, ...)을 호출하므로
+  // 여기서는 "유저 VA"인 va를 넘겨야 한다.
+  swapread(va, slot);
+
+  // slot은 다 썼으니 free
+  swap_free_slot(slot);
+
+  // LRU에 다시 등록
+  struct page *pg = pa2page((uint64)mem);
+  pg->pagetable = pagetable;
+  pg->vaddr = (char*)PGROUNDDOWN(va);
+  lru_add(pg);
+
+  return 0;
+}
+
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -320,6 +384,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
+    // retore first if it's swapped-out page
+    if(*pte & PTE_S){
+      if(swap_in(old, i) < 0)
+        goto err;
+      pte = walk(old, i, 0);
+    }
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
